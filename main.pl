@@ -164,7 +164,8 @@ if (!$app_info) {
     print "没有获取到 appid:$appid 应用信息。\n";
     exit 1;
 }
-my $apk_url = "https://repo.lazycat.cloud$app_info->{pkgPath}";
+# my $apk_url = "https://repo.lazycat.cloud$app_info->{pkgPath}";
+my $apk_url = "https://dl.lazycat.cloud/appstore/lpks$app_info->{pkgPath}";
 
 print "name: $app_info->{name}\n";
 print "appid: $app_info->{pkgId}\n";
@@ -191,6 +192,8 @@ if (!$parsed_data) {
     print "[failed] 解析包数据失败\n";
     exit 1;
 }
+
+print "subdomain: https://$parsed_data->{application}->{subdomain}.boxname.heiyu.space\n";
 
 # 读取服务信息
 my @result_strings = extractInfo($parsed_data);
