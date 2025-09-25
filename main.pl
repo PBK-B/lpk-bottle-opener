@@ -149,34 +149,40 @@ sub extractInfo {
 
 
 if (@ARGV != 1) {
-    die "Usage: perl main.pl <appid>\n";
+    die "Usage: perl main.pl <appid>/<path>\n";
 }
 
-my ($appid) = $ARGV[0];
-if(!$appid) {
-    print "[failed] 请输入正确的 appid, 示例: cloud.lazycat.app.forwar\n";
+my ($appid_or_path) = $ARGV[0];
+if (!$appid_or_path) {
+    print "[failed] 请输入正确的 appid 或文件路径, 示例: cloud.lazycat.app.forwar 或 ./demo.lpk\n";
     exit 1;
 }
 
-# my $appid = "cloud.lazycat.app.forward";  # 替换为实际的 appid
-my $app_info = getAppInfo($appid);
-if (!$app_info) {
-    print "没有获取到 appid:$appid 应用信息。\n";
-    exit 1;
-}
-# my $apk_url = "https://repo.lazycat.cloud$app_info->{pkgPath}";
-my $apk_url = "https://dl.lazycat.cloud/appstore/lpks$app_info->{pkgPath}";
+# my $appid_or_path = "cloud.lazycat.app.forward";  # 替换为实际的 appid
+my $file_path = $appid_or_path;
+if (-e $appid_or_path) {
+    print "开始解析 $appid_or_path 文件。\n";
+} else {
+    my $appid = $appid_or_path;
+    my $app_info = getAppInfo($appid);
+    if (!$app_info) {
+        print "没有获取到 appid:$appid 应用信息。\n";
+        exit 1;
+    }
+    # my $apk_url = "https://repo.lazycat.cloud$app_info->{pkgPath}";
+    my $apk_url = "https://dl.lazycat.cloud/appstore/lpks$app_info->{pkgPath}";
 
-print "name: $app_info->{name}\n";
-print "appid: $app_info->{pkgId}\n";
-print "version: $app_info->{version}\n";
-print "url: $apk_url\n";
+    print "name: $app_info->{name}\n";
+    print "appid: $app_info->{pkgId}\n";
+    print "version: $app_info->{version}\n";
+    print "url: $apk_url\n";
 
-# 下载 lpk 文件
-my $file_path = downloadLpkFile($apk_url);
-if (!$file_path) {
-    print "[failed] 下载包失败\n";
-    exit 1;
+    # 下载 lpk 文件
+    $file_path = downloadLpkFile($apk_url);
+    if (!$file_path) {
+        print "[failed] 下载包失败\n";
+        exit 1;
+    }
 }
 
 # 解压 lpk 文件

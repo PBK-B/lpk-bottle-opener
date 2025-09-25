@@ -1,3 +1,5 @@
 local/
 tmp/
 vendor/
+
+.DS_Store
