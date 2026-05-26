@@ -6,7 +6,8 @@ use HTTP::Request;
 use JSON;
 use File::Basename;
 use Archive::Zip qw(:ERROR_CODES :CONSTANTS);
-use File::Path qw(make_path);
+use Archive::Tar;
+use File::Path qw(make_path remove_tree);
 use YAML::XS;
 
 use utf8;  # 处理源代码中的 UTF-8 字符
@@ -72,39 +73,113 @@ sub unLpkFile {
     my ($file_path) = @_;
 
     my $tmp_dir = './tmp/content';
-    make_path($tmp_dir) unless -d $tmp_dir;
+    remove_tree($tmp_dir) if -d $tmp_dir;
+    make_path($tmp_dir);
 
-    my $zip = Archive::Zip->new();
-    my $status = $zip->read($file_path);
+    open my $fh, '<:raw', $file_path or do {
+        warn "无法打开文件: $file_path: $!\n";
+        return 0;
+    };
+    read $fh, my $magic, 4;
+    close $fh;
 
-    if ($status == AZ_OK) {
-        $zip->extractTree('', $tmp_dir);
-        # print "解压成功到: $tmp_dir\n";
-        return 1;
-    } else {
-        warn "解压失败: " . Archive::Zip::getStatusString($status) . "\n";
+    if ($magic eq "PK\x03\x04") {
+        my $zip = Archive::Zip->new();
+        my $status = eval { $zip->read($file_path) };
+
+        if (defined $status && $status == AZ_OK) {
+            $zip->extractTree('', $tmp_dir);
+            return 1;
+        }
+
+        my $zip_error = $@ || (defined $status ? $status : 'unknown zip status');
+        warn "解压 zip 失败: $zip_error\n";
         return 0;
     }
+
+    my $tar = Archive::Tar->new();
+    my $tar_ok = eval {
+        $tar->read($file_path);
+
+        for my $file ($tar->get_files) {
+            my $target = "$tmp_dir/" . $file->full_path;
+            my $target_dir = dirname($target);
+            make_path($target_dir) unless -d $target_dir;
+            $tar->extract_file($file->full_path, $target);
+        }
+
+        1;
+    };
+
+    if ($tar_ok) {
+        return 1;
+    }
+
+    my $tar_error = $@ || 'unknown tar error';
+    warn "解压 tar 失败: $tar_error\n";
+    return 0;
 }
 
-sub parseManifestFile {
+sub parseYamlFile {
     my ($file_path) = @_;
 
-    my $data = YAML::XS::LoadFile($file_path);
+    return undef unless -e $file_path;
 
-    if (defined $data) {
-        return $data;
-    } else {
-        warn "Failed to parse YAML content.";
+    my $data = eval { YAML::XS::LoadFile($file_path) };
+    if ($@) {
+        warn "Failed to parse YAML file $file_path: $@";
         return undef;
     }
+
+    return $data;
+}
+
+sub loadPackageData {
+    my ($base_dir) = @_;
+
+    my $manifest_file_path = -e "$base_dir/manifest.yml"
+        ? "$base_dir/manifest.yml"
+        : "$base_dir/lzc-manifest.yml";
+    my $package_file_path = "$base_dir/package.yml";
+
+    my $manifest_data = parseYamlFile($manifest_file_path);
+    my $package_data = parseYamlFile($package_file_path);
+
+    if (!$manifest_data && !$package_data) {
+        warn "Failed to find manifest.yml, lzc-manifest.yml, or package.yml under $base_dir\n";
+        return undef;
+    }
+
+    my $data = {};
+
+    if ($manifest_data) {
+        %{$data} = %{$manifest_data};
+    }
+
+    if ($package_data) {
+        for my $key (keys %{$package_data}) {
+            $data->{$key} = $package_data->{$key};
+        }
+    }
+
+    return $data;
 }
 
 sub extractInfo {
     my ($data) = @_;
     my @results;
+    my %seen;
 
     my $package = $data->{package};
+    if (!defined $package && defined $data->{application}->{upstreams}) {
+        for my $upstream (@{ $data->{application}->{upstreams} }) {
+            my $backend = $upstream->{backend};
+            if ($backend && $backend =~ m{^[a-z]+://[^.]+\.(.+)\.lzcapp(?::\d+)?$}) {
+                $package = $1;
+                last;
+            }
+        }
+    }
 
     # 处理 route 部分
     if (defined $data->{application}->{routes}) {
@@ -126,7 +201,22 @@ sub extractInfo {
             my $protocol = $ingress->{protocol};
             my $service = $ingress->{service};
             my $port = $ingress->{port};
-            push @results, "${protocol}://${service}.${package}.lzcapp:${port}";
+            my $result = "${protocol}://${service}.${package}.lzcapp:${port}";
+            push @results, $result unless $seen{$result}++;
+        }
+    }
+
+    # 处理 upstreams
+    if (defined $data->{application}->{upstreams}) {
+        for my $upstream (@{ $data->{application}->{upstreams} }) {
+            my $backend = $upstream->{backend};
+            next unless $backend;
+
+            if ($backend =~ m{^([a-z]+)://([^.]+)\.([^.]+(?:\.[^.]+)*)\.lzcapp:(\d+)(?:/.*)?$}) {
+                my ($protocol, $service_name, $backend_package, $port) = ($1, $2, $3, $4);
+                my $result = "${protocol}://${service_name}.${backend_package}.lzcapp:${port}";
+                push @results, $result unless $seen{$result}++;
+            }
         }
     }
 
@@ -135,7 +225,8 @@ sub extractInfo {
         for my $service_name (keys %{ $data->{services} }) {
             my $service = $data->{services}->{$service_name};
 
-            push @results, "${service_name}.${package}.lzcapp:0";
+            my $result = "${service_name}.${package}.lzcapp:0";
+            push @results, $result unless $seen{$result}++;
             # if ($service->{command} =~ /:(\d+)/) {
             #     my $port = $1;
             # } else {
@@ -191,8 +282,7 @@ if(!unLpkFile($file_path)) {
     exit 1;
 }
 
-my $manifest_file_path = 'tmp/content/manifest.yml';
-my $parsed_data = parseManifestFile($manifest_file_path);
+my $parsed_data = loadPackageData('tmp/content');
 
 if (!$parsed_data) {
     print "[failed] 解析包数据失败\n";
